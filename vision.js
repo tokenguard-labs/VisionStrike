@@ -8,11 +8,29 @@ const MODEL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/h
 const INDEX_TIP = 8;
 const THUMB_TIP = 4;
 const WRIST = 0;
+const INDEX_MCP = 5;
 const MIDDLE_MCP = 9;
+const PINKY_MCP = 17;
 
-// Pinch hysteresis, as a ratio of (thumb-index distance / hand size).
-const PINCH_ON = 0.28;
-const PINCH_OFF = 0.45;
+const LOST_GRACE_MS = 250; // keep the last sample alive across brief tracking drops
+
+/** One-Euro filter: heavy smoothing when the hand is slow/still, almost none when it moves fast. */
+class OneEuro {
+  constructor(minCutoff = 1.6, beta = 10, dCutoff = 1) {
+    Object.assign(this, { minCutoff, beta, dCutoff, x: null, dx: 0 });
+  }
+  static alpha(cutoff, dt) { const tau = 1 / (2 * Math.PI * cutoff); return 1 / (1 + tau / dt); }
+  reset() { this.x = null; this.dx = 0; }
+  filter(v, dt) {
+    if (this.x === null) { this.x = v; return v; }
+    dt = Math.max(dt, 1e-3);
+    const d = (v - this.x) / dt;
+    this.dx += OneEuro.alpha(this.dCutoff, dt) * (d - this.dx);
+    const cutoff = this.minCutoff + this.beta * Math.abs(this.dx);
+    this.x += OneEuro.alpha(cutoff, dt) * (v - this.x);
+    return this.x;
+  }
+}
 
 export class HandTracker {
   constructor(video) {
@@ -21,8 +39,15 @@ export class HandTracker {
     this.ready = false;
     this.lastVideoTime = -1;
     this.pinching = false;
-    this.result = null; // {x, y (normalised, un-mirrored), dist, ratio, pinching}
+    this.pinchOn = 0.33;           // pinch when thumb-index distance < this * hand size (adjustable in-game)
+    this.result = null;            // {x, y (normalised, un-mirrored, filtered), dist, ratio, pinching, stale}
+    this.lastSeen = 0;
+    this.lastTime = 0;
+    this.fx = new OneEuro();
+    this.fy = new OneEuro();
   }
+
+  get pinchOff() { return this.pinchOn * 1.5; }
 
   async init(onStatus = () => {}) {
     onStatus('Requesting webcam...');
@@ -56,13 +81,16 @@ export class HandTracker {
   /** Call once per frame. Returns the latest hand sample or null if no hand. */
   detect(now) {
     if (!this.ready || this.video.readyState < 2) return this.result;
-    if (this.video.currentTime === this.lastVideoTime) return this.result; // no new frame
+    if (this.video.currentTime === this.lastVideoTime) return this.result; // no new camera frame
     this.lastVideoTime = this.video.currentTime;
 
     const res = this.landmarker.detectForVideo(this.video, now);
     if (!res.landmarks || res.landmarks.length === 0) {
+      // Brief dropouts (common while the fingers close) must not release the pinch or reset aim.
+      if (this.result && now - this.lastSeen < LOST_GRACE_MS) return this.result;
       this.pinching = false;
       this.result = null;
+      this.fx.reset(); this.fy.reset();
       return null;
     }
     const lm = res.landmarks[0];
@@ -71,14 +99,23 @@ export class HandTracker {
 
     // Euclidean distance between thumb tip and index tip (normalised coords).
     const dist = Math.hypot(thumb.x - idx.x, thumb.y - idx.y);
-    // Normalise by hand size so the pinch works at any distance from the camera.
-    const handSize = Math.hypot(lm[WRIST].x - lm[MIDDLE_MCP].x, lm[WRIST].y - lm[MIDDLE_MCP].y) || 1;
+    // Normalise by hand size (largest of palm length / palm width, so a hand tilted toward the
+    // camera does not shrink the reference and fake a pinch).
+    const handSize = Math.max(
+      Math.hypot(lm[WRIST].x - lm[MIDDLE_MCP].x, lm[WRIST].y - lm[MIDDLE_MCP].y),
+      Math.hypot(lm[INDEX_MCP].x - lm[PINKY_MCP].x, lm[INDEX_MCP].y - lm[PINKY_MCP].y) * 1.1,
+    ) || 1;
     const ratio = dist / handSize;
 
-    if (this.pinching) { if (ratio > PINCH_OFF) this.pinching = false; }
-    else if (ratio < PINCH_ON) this.pinching = true;
+    if (this.pinching) { if (ratio > this.pinchOff) this.pinching = false; }
+    else if (ratio < this.pinchOn) this.pinching = true;
 
-    this.result = { x: idx.x, y: idx.y, dist, ratio, pinching: this.pinching };
+    const dt = this.lastTime ? (now - this.lastTime) / 1000 : 1 / 30;
+    this.lastTime = now; this.lastSeen = now;
+    this.result = {
+      x: this.fx.filter(idx.x, dt), y: this.fy.filter(idx.y, dt),
+      rawX: idx.x, rawY: idx.y, dist, ratio, pinching: this.pinching,
+    };
     return this.result;
   }
 }

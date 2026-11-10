@@ -250,7 +250,7 @@ class Zombie {
     const s = this.scale, w = SPR_W * s * .62, h = SPR_H * s * .97;
     return { x: this.x - w / 2, y: this.y - h, w, h };
   }
-  contains(px, py) { const b = this.box; return px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h; }
+  contains(px, py, pad = 0) { const b = this.box; return px >= b.x - pad && px <= b.x + b.w + pad && py >= b.y - pad && py <= b.y + b.h + pad; }
   // Is an obstacle between the camera and this zombie (zombie's feet are above the cover's base)?
   coverOverlaps(o) {
     if (this.y >= o.base) return false;
@@ -281,7 +281,7 @@ class Zombie {
 const state = {
   mode: 'menu',            // menu | playing | transition | gameover
   wave: 0, score: 0, best: 0, kills: 0, shots: 0, hits: 0,
-  health: 100, ammo: 8, mag: 8, reload: 0,
+  health: 100, ammo: 10, mag: 10, reload: 0,
   toSpawn: 0, spawnTimer: 0, timer: 0, shake: 0, hurtFlash: 0, lock: 0,
   zombies: [], particles: [], floaters: [], rings: [],
 };
@@ -336,7 +336,7 @@ const ring = (x, y, color) => state.rings.push({ x, y, color, life: .25 });
 
 function startReload() {
   if (state.reload > 0 || state.ammo === state.mag) return;
-  state.reload = 1.4; sfx.reload();
+  state.reload = 1.0; sfx.reload();
 }
 
 /* ------------------------- Fire + hit detection ------------------------- */
@@ -357,7 +357,7 @@ function fire(px, py) {
 
   // Front-most zombie whose hitbox contains the shot and isn't hidden behind cover.
   const target = state.zombies
-    .filter(z => z.alive && z.contains(px, py) && !isOccluded(z, px, py))
+    .filter(z => z.alive && z.contains(px, py, 14) && !isOccluded(z, px, py)) // 14px aim-assist padding
     .sort((a, b) => b.y - a.y)[0];
 
   if (target) {
@@ -433,29 +433,41 @@ function update(dt, now) {
 }
 
 /* ----------------------- Input: hand + mouse mapping ----------------------- */
+// Active camera zone mapped to the full canvas. Smaller than the whole frame so the edges of the
+// screen are reachable while your hand is still comfortably (fully) inside the camera view.
+const ZONE = { x0: 0.18, x1: 0.82, y0: 0.15, y1: 0.70 };
+let lastShot = 0;
+
 function updateAim(dt, now) {
   const hand = tracker ? tracker.detect(now) : null;
   aim.hand = !!hand;
   if (hand) {
-    // Mirror horizontally (selfie view), then stretch the central 80% of the camera frame
-    // over the whole canvas so you can reach the edges without leaving the camera's view.
-    const mx = 1 - hand.x;
-    aim.tx = clamp((mx - .1) / .8, 0, 1) * W;
-    aim.ty = clamp((hand.y - .1) / .75, 0, 1) * H;
-    // Aim history: fire at where the crosshair was ~120ms ago, because the index tip drifts
-    // while the thumb closes in for the pinch.
-    aim.history.push({ t: now, x: aim.tx, y: aim.ty });
-    while (aim.history.length > 1 && now - aim.history[0].t > 400) aim.history.shift();
-    if (hand.pinching && !aim.pinch) {
-      let s = aim.history[0];
-      for (const h of aim.history) if (now - h.t >= 120) s = h;
+    // Mirror horizontally (selfie view), then stretch the active zone over the whole canvas.
+    aim.tx = clamp((1 - hand.x - ZONE.x0) / (ZONE.x1 - ZONE.x0), 0, 1) * W;
+    aim.ty = clamp((hand.y - ZONE.y0) / (ZONE.y1 - ZONE.y0), 0, 1) * H;
+    aim.ratio = hand.ratio;
+    // Keep a short history of (position, pinch ratio). The index tip drifts while the thumb
+    // closes, so a shot is fired at where the finger was *before* the pinch began.
+    const last = aim.history[aim.history.length - 1];
+    if (!last || last.t !== now) aim.history.push({ t: now, x: aim.tx, y: aim.ty, r: hand.ratio });
+    while (aim.history.length > 1 && now - aim.history[0].t > 500) aim.history.shift();
+
+    if (hand.pinching && !aim.pinch && now - lastShot > 140) {
+      lastShot = now;
+      const open = tracker.pinchOn * 1.7;  // "fingers still apart" threshold
+      let s = null;
+      for (let i = aim.history.length - 1; i >= 0; i--) {
+        if (now - aim.history[i].t > 300) break;
+        if (aim.history[i].r > open) { s = aim.history[i]; break; }
+      }
+      if (!s) s = aim.history.find(h => now - h.t <= 300) || aim.history[0];
       fire(s.x, s.y);
     }
     aim.pinch = hand.pinching;
   } else {
-    aim.pinch = false;
+    aim.pinch = false; aim.ratio = null; aim.history.length = 0;
   }
-  const k = 1 - Math.exp(-dt * 28);
+  const k = 1 - Math.exp(-dt * (hand ? 45 : 28));
   aim.x = lerp(aim.x, aim.tx, k);
   aim.y = lerp(aim.y, aim.ty, k);
 }
@@ -476,6 +488,8 @@ canvas.addEventListener('mousedown', e => {
 window.addEventListener('keydown', e => {
   if (e.code === 'Space') { e.preventDefault(); fire(aim.x, aim.y); }
   if (e.code === 'KeyR' && state.mode === 'playing') startReload();
+  if (tracker && (e.key === '+' || e.key === '=')) tracker.pinchOn = Math.min(.6, tracker.pinchOn + .02);  // easier pinch
+  if (tracker && (e.key === '-' || e.key === '_')) tracker.pinchOn = Math.max(.15, tracker.pinchOn - .02); // stricter pinch
 });
 
 /* ------------------------------ Rendering ------------------------------ */
@@ -550,12 +564,13 @@ function drawHUD(now) {
     }
     if (state.reload > 0) {
       ctx.fillStyle = 'rgba(255,225,74,.25)'; ctx.fillRect(32, H - 22, 200, 8);
-      ctx.fillStyle = '#ffe14a'; ctx.fillRect(32, H - 22, 200 * (1 - state.reload / 1.4), 8);
+      ctx.fillStyle = '#ffe14a'; ctx.fillRect(32, H - 22, 200 * (1 - state.reload / 1.0), 8);
       neonText('RELOADING', 244, H - 14, 14, '#ffe14a');
     } else if (state.ammo === 0) neonText('PINCH TO RELOAD', 32, H - 14, 14, '#ff3b3b');
 
     // tracker status
     const label = tracker && tracker.ready ? (aim.hand ? (aim.pinch ? 'HAND: PINCH' : 'HAND: TRACKING') : 'HAND: SEARCHING...') : 'INPUT: MOUSE';
+    if (tracker && tracker.ready) neonText(`PINCH SENS ${Math.round(tracker.pinchOn * 100)}  (+/-)`, W - 24, H - 42, 12, '#8fdcff', 'right');
     neonText(label, W - 24, H - 20, 14, aim.hand ? '#7fff6a' : '#ffd24a', 'right');
   }
 
@@ -586,6 +601,14 @@ function drawCrosshair(now) {
   }
   ctx.beginPath(); ctx.arc(0, 0, 3, 0, 7); ctx.fill();
   ctx.restore();
+  if (aim.ratio != null && tracker) {          // pinch meter: fills as the fingers close; full = fires
+    const f = clamp(1 - (aim.ratio - tracker.pinchOn) / (tracker.pinchOn * 1.4), 0, 1);
+    ctx.save(); ctx.translate(x, y); ctx.lineWidth = 4; ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.beginPath(); ctx.arc(0, 0, 38, 0, 7); ctx.stroke();
+    ctx.strokeStyle = aim.pinch ? '#ff2bd6' : '#ffe14a';
+    ctx.beginPath(); ctx.arc(0, 0, 38, -Math.PI / 2, -Math.PI / 2 + f * Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
 }
 
 /* ------------------------------ Boot / loop ------------------------------ */
