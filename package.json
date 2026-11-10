@@ -1,0 +1,9 @@
+{
+  "name": "visionstrike",
+  "version": "1.0.0",
+  "description": "Hand-tracking zombie shooter: aim with your index finger, pinch to fire.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "MIT"
+}
