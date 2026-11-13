@@ -26,9 +26,77 @@
       <div class="buttons">
         <button id="btn-hand">START &mdash; HAND TRACKING</button>
         <button id="btn-mouse" class="alt">PLAY WITH MOUSE</button>
+        <button id="btn-tutorial">TUTORIAL</button>
+        <button id="btn-leaderboard" class="alt">LEADERBOARD</button>
       </div>
       <p id="status"></p>
     </div>
+
+    <div id="username" class="panel hidden">
+      <h2>ENTER CALLSIGN</h2>
+      <p class="tag">// YOUR NAME GOES ON THE LEADERBOARD //</p>
+      <input id="name-input" maxlength="12" placeholder="PLAYER" autocomplete="off" spellcheck="false">
+      <div class="buttons">
+        <button id="btn-name-ok">CONTINUE</button>
+      </div>
+    </div>
+
+    <div id="instructions" class="hidden">
+      <h2>MISSION BRIEFING</h2>
+      <div class="pictorials"></div>
+      <ul>
+        <li>Zombies pour out of the corridor exits &mdash; <b>drop them before they reach you</b></li>
+        <li><b>Headshots</b> deal double damage and score +50</li>
+        <li>Desks &amp; pillars <b>block your shots</b> &mdash; wait for a clear line of fire</li>
+        <li><b>Pinch / click / SPACE</b> to fire &mdash; empty mag auto-reloads (or press <b>R</b>)</li>
+        <li><b>P</b> or the corner button pauses with full control instructions</li>
+        <li>Clear a wave for <b>+15 health</b> and a bonus; they get faster every wave</li>
+        <li>Hand lost? The game keeps searching &mdash; bring your <b>palm back to the camera</b>, 40&ndash;70&nbsp;cm, fully in frame</li>
+      </ul>
+      <div class="buttons">
+        <button id="btn-start">START MISSION</button>
+      </div>
+      <p class="hint">// pinch, click or press SPACE to begin //</p>
+    </div>
+
+    <div id="tut-prep" class="panel hidden">
+      <h2>TRAINING BRIEF</h2>
+      <div class="pictorials"></div>
+      <ul>
+        <li>Step 1 &mdash; <b>Calibrate</b>: move the reticle into the rings and hold</li>
+        <li>Step 2 &mdash; <b>Pinch</b> thumb + index to fire</li>
+        <li>Step 3 &mdash; <b>2 guided kills</b>, then the mission begins</li>
+      </ul>
+      <div class="buttons">
+        <button id="btn-tut-go">BEGIN CALIBRATION</button>
+      </div>
+      <p class="hint">// press ESC any time to skip training //</p>
+    </div>
+
+    <div id="pausepanel" class="panel hidden">
+      <h2>PAUSED</h2>
+      <div class="pictorials"></div>
+      <ul>
+        <li><b>Index finger</b> aims &middot; <b>Pinch</b> fires &middot; <b>Headshots</b> &times;2 damage</li>
+        <li>Empty mag auto-reloads &middot; <b>R</b> reloads early &middot; <b>P / ESC</b> resumes</li>
+        <li>Hand lost? <b>Palm to camera</b>, 40&ndash;70&nbsp;cm away, fully inside the frame</li>
+        <li>Mouse: move = aim &middot; click / SPACE = fire</li>
+      </ul>
+      <div class="buttons">
+        <button id="btn-resume">RESUME</button>
+        <button id="btn-quit" class="alt">MAIN MENU</button>
+      </div>
+    </div>
+
+    <div id="leaderboard" class="panel hidden">
+      <h2>TOP 10</h2>
+      <ol id="lb-list"></ol>
+      <div class="buttons">
+        <button id="btn-lb-close">CLOSE</button>
+      </div>
+    </div>
+
+    <button id="btn-pause" class="hidden" title="Pause (P)">&#10074;&#10074;</button>
 
     <video id="cam" playsinline muted></video>
   </div>
