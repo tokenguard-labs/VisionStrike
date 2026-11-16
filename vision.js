@@ -12,7 +12,8 @@ const INDEX_MCP = 5;
 const MIDDLE_MCP = 9;
 const PINKY_MCP = 17;
 
-const LOST_GRACE_MS = 250; // keep the last sample alive across brief tracking drops
+const LOST_GRACE_MS = 250;   // keep the last sample alive across brief tracking drops
+const REACQUIRE_RESET_MS = 1200; // hand gone this long -> rebuild the landmarker to clear stuck tracker state
 
 /** One-Euro filter: heavy smoothing when the hand is slow/still, almost none when it moves fast. */
 class OneEuro {
@@ -45,6 +46,8 @@ export class HandTracker {
     this.lastTime = 0;
     this.fx = new OneEuro();
     this.fy = new OneEuro();
+    this.lostAt = 0;               // timestamp of first lost-hand frame in the current gap
+    this.recreating = false;
   }
 
   get pinchOff() { return this.pinchOn * 1.5; }
@@ -65,17 +68,45 @@ export class HandTracker {
       baseOptions: { modelAssetPath: MODEL, delegate },
       runningMode: 'VIDEO',
       numHands: 1,
-      minHandDetectionConfidence: 0.7,
-      minHandPresenceConfidence: 0.7,
-      minTrackingConfidence: 0.7,
+      // Lower presence/detection thresholds so a hand re-entering the frame is
+      // picked up immediately instead of being rejected while "searching".
+      minHandDetectionConfidence: 0.5,
+      minHandPresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
     });
-    try {
-      this.landmarker = await HandLandmarker.createFromOptions(fileset, opts('GPU'));
-    } catch (e) {
-      console.warn('GPU delegate failed, falling back to CPU', e);
-      this.landmarker = await HandLandmarker.createFromOptions(fileset, opts('CPU'));
-    }
+    this.fileset = fileset;
+    this.makeLandmarker = async () => {
+      try {
+        return await HandLandmarker.createFromOptions(fileset, opts('GPU'));
+      } catch (e) {
+        console.warn('GPU delegate failed, falling back to CPU', e);
+        return await HandLandmarker.createFromOptions(fileset, opts('CPU'));
+      }
+    };
+    this.landmarker = await this.makeLandmarker();
     this.ready = true;
+  }
+
+  /** Rebuild the landmarker after a long hand loss. MediaPipe's internal tracker can
+   *  latch onto the last seen region and re-acquire slowly; a fresh instance searches
+   *  the whole frame again right away. */
+  async recreate() {
+    if (this.recreating) return;
+    this.recreating = true;
+    this.ready = false;
+    try {
+      this.landmarker.close();
+    } catch (e) { /* ignore */ }
+    try {
+      this.landmarker = await this.makeLandmarker();
+      this.lastVideoTime = -1; // force the next camera frame to be processed
+      this.ready = true;
+    } catch (e) {
+      console.error('landmarker rebuild failed', e);
+      this.ready = false;
+    } finally {
+      this.recreating = false;
+    }
   }
 
   /** Call once per frame. Returns the latest hand sample or null if no hand. */
@@ -88,11 +119,19 @@ export class HandTracker {
     if (!res.landmarks || res.landmarks.length === 0) {
       // Brief dropouts (common while the fingers close) must not release the pinch or reset aim.
       if (this.result && now - this.lastSeen < LOST_GRACE_MS) return this.result;
+      if (!this.lostAt) this.lostAt = now;
+      // Keep searching every frame; if the hand stays gone long enough, rebuild the
+      // landmarker so its tracker forgets the old hand position and re-scans instantly.
+      if (now - this.lostAt > REACQUIRE_RESET_MS) {
+        this.lostAt = now;
+        if (!this.recreating) this.recreate();
+      }
       this.pinching = false;
       this.result = null;
       this.fx.reset(); this.fy.reset();
       return null;
     }
+    this.lostAt = 0;
     const lm = res.landmarks[0];
     const idx = lm[INDEX_TIP];
     const thumb = lm[THUMB_TIP];
